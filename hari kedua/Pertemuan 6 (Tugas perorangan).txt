@@ -1,0 +1,484 @@
+Pertemuan 6 (Tugas perorangan)
+
+Kegiatan praktikum terbimbing
+
+
+fase 1
+
+// buat folder baru dan aktifkan virtual enviroment
+Mkdir praktikum 6
+\venv\Scripts\activate
+
+//buat file .env
+MONGO_URI=mongodb://localhost:27017
+DB_NAME=praktikum6
+
+//buat file koneksi.py
+import os
+from dotenv import load_dotenv
+from pymongo import MongoClient
+
+load_dotenv()
+client = MongoClient(os.getenv("MONGO_URI"),
+serverSelectionTimeoutMS=5000)
+
+try:
+    client.admin.command('ping')
+    print("Koneksi MongoDB berhasil!")
+except Exception as e:
+    print("Gagal terhubung:", e)
+finally:
+    client.close()
+
+2. fase 2
+	//a. Buat file crud_sensor.py, lalu buat koneksi ke database praktikum6 dan koleksi sensor.
+from dotenv import load_dotenv
+from pymongo import MongoClient
+from datetime import datetime, timedelta
+import random, os
+
+load_dotenv()
+client = MongoClient(os.getenv("MONGO_URI"))
+db = client[os.getenv("DB_NAME")]
+collection = db["sensor"]
+
+	//b. insert many
+data = []
+for i in range(10):
+    doc = {
+        "mesin": f"CNC-{random.randint(1,3):02d}",
+        "suhu": round(random.uniform(60, 100), 2),
+        "getaran": round(random.uniform(0.1, 0.5), 2),
+        "timestamp": datetime.utcnow() - timedelta(minutes=i*5),
+        "status": "normal"
+    }
+    data.append(doc)
+result = collection.insert_many(data)
+print(f"Tersimpan {len(result.inserted_ids)} dokumen")
+
+	//c. read
+cursor = collection.find(
+    {"mesin": "CNC-01"},
+    {"_id": 0, "suhu": 1, "timestamp": 1}
+).sort("timestamp", -1).limit(5)
+print("Data CNC-01 terbaru:")
+for doc in cursor:
+    print(doc)
+
+	//d. update
+update_result = collection.update_many(
+    {"suhu": {"$gt": 90}},
+    {"$set": {"status": "maintenance"}}
+)
+print(f"Update: {update_result.modified_count} dokumen diubah")
+
+	//e. delete
+satu_jam_lalu = datetime.utcnow() - timedelta(hours=1)
+delete_result = collection.delete_many({"timestamp": {"$lt": satu_jam_lalu}})
+print(f"Delete: {delete_result.deleted_count} dokumen dihapus")
+
+
+3. fase 3
+
+// agregasi via python
+import os
+from dotenv import load_dotenv
+from pymongo import MongoClient
+
+load_dotenv()
+client = MongoClient(os.getenv("MONGO_URI"))
+db = client[os.getenv("DB_NAME")]
+collection = db["sensor"]
+
+pipeline = [
+    {"$group": {
+        "_id": "$mesin",
+        "rata_suhu": {"$avg": "$suhu"},
+        "max_getaran": {"$max": "$getaran"},
+        "count": {"$sum": 1}
+    }},
+    {"$sort": {"rata_suhu": -1}}
+]
+
+results = collection.aggregate(pipeline)
+print("Rata-rata suhu per mesin:")
+for doc in results:
+    print(f"{doc['_id']} -> rata:{doc['rata_suhu']:.2f}°C, max getaran:{doc['max_getaran']}, jumlah data:{doc['count']}")
+
+client.close()
+
+
+4. fase 4
+
+//analisis dengan pandas
+import pandas as pd
+import matplotlib.pyplot as plt
+from dotenv import load_dotenv
+from pymongo import MongoClient
+import os
+
+load_dotenv()
+client = MongoClient(os.getenv("MONGO_URI"))
+db = client[os.getenv("DB_NAME")]
+collection = db["sensor"]
+
+#Ambil Data
+cursor = collection.find({}, {"_id": 0})
+df = pd.DataFrame(list(cursor))
+
+if df.empty:
+    print("Data tidak ditemukan di database!")
+else:
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    
+    # Filter mesin CNC-01
+    df = df[df["mesin"] == "CNC-01"]
+    
+    # Urutkan berdasarkan waktu agar garis grafik tidak bolak-balik
+    df = df.sort_values("timestamp")
+    
+    # Pastikan data suhu numerik
+    df['suhu'] = pd.to_numeric(df['suhu'], errors='coerce')
+    
+    # Set index ke timestamp (untuk grafik dan resample)
+    df.set_index("timestamp", inplace=True)
+
+    # Agregasi (Sesuai Fase 4)
+    resampled = df[['suhu']].resample('10min').mean()
+
+    plt.figure(figsize=(10, 5))
+    plt.plot(resampled.index, resampled["suhu"], marker='o', linestyle='-', color='b')
+    
+    plt.title("Tren Suhu CNC-01 (Rata-rata 10 Menit)")
+    plt.xlabel("Waktu")
+    plt.ylabel("Suhu (°C)")
+    plt.grid(True)
+    plt.xticks(rotation=45)
+    plt.tight_layout() 
+    
+    print("Menampilkan grafik...")
+    plt.show()
+
+    # Ekspor ke CSV (PERBAIKAN DI SINI)
+    resampled.to_csv("agregasi_cnc01.csv")
+    print("Data hasil agregasi berhasil disimpan ke 'agregasi_cnc01.csv'")
+
+client.close()
+
+
+5. fase 5
+
+//data generator langsung
+import time, random
+from datetime import datetime
+from pymongo import MongoClient
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+client = MongoClient(os.getenv("MONGO_URI"))
+db = client[os.getenv("DB_NAME")]
+collection = db["sensor"]
+
+while True:
+    doc = {
+        "mesin": f"CNC-{random.randint(1,5):02d}",
+        "suhu": round(random.uniform(60, 100), 2),
+        "getaran": round(random.uniform(0.1, 0.5), 2),
+        "timestamp": datetime.utcnow()
+    }
+    collection.insert_one(doc)
+    print(f"[{datetime.utcnow()}] Inserted: {doc['mesin']} - {doc['suhu']}°C")
+    time.sleep(2)
+
+6. fase 5B
+
+// simulasi data sensor melalu MQTT, publisher
+import json, time, random
+import paho.mqtt.client as mqtt
+from datetime import datetime
+
+BROKER = "test.mosquitto.org"
+PORT = 1883
+TOPIC = "pabrik/sensor/suhu"
+
+client = mqtt.Client()
+client.connect(BROKER, PORT, 60)
+
+while True:
+    data = {
+        "mesin": f"CNC-{random.randint(1,5):02d}",
+        "suhu": round(random.uniform(60, 100), 2),
+        "getaran": round(random.uniform(0.1, 0.5), 2),
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    payload = json.dumps(data)
+    client.publish(TOPIC, payload)
+    print(f"[PUB] {payload}")
+    time.sleep(2)
+
+//suscriber
+import json, os
+import paho.mqtt.client as mqtt
+from pymongo import MongoClient
+from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
+MONGO_URI = os.getenv("MONGO_URI")
+DB_NAME = os.getenv("DB_NAME")
+
+mongo_client = MongoClient(MONGO_URI)
+db = mongo_client[DB_NAME]
+collection = db["sensor"]
+
+def on_connect(client, userdata, flags, rc):
+    print("Terhubung ke MQTT broker")
+    client.subscribe("pabrik/sensor/suhu")
+
+def on_message(client, userdata, msg):
+    try:
+        payload = json.loads(msg.payload.decode())
+        payload['timestamp'] = datetime.fromisoformat(payload['timestamp'])
+        result = collection.insert_one(payload)
+        print(f"[MONGO] Tersimpan {result.inserted_id} - {payload['mesin']} {payload['suhu']}°C")
+    except Exception as e:
+        print("Error:", e)
+
+mqtt_client = mqtt.Client()
+mqtt_client.on_connect = on_connect
+mqtt_client.on_message = on_message
+mqtt_client.connect("test.mosquitto.org", 1883, 60)
+mqtt_client.loop_forever()
+
+7. fase 6
+
+//error handling dan logging
+import paho.mqtt.client as mqtt
+import time, random, json, logging
+from datetime import datetime
+
+# Setup Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',
+                    handlers=[logging.FileHandler("gudang.log"), logging.StreamHandler()])
+
+BROKER = "broker.hivemq.com"
+TOPIC = "farmasi/gudang/suhu"
+
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+
+try:
+    client.connect(BROKER, 1883, 60)
+    logging.info("Simulator Sensor Gudang Aktif...")
+    
+    while True:
+        payload = {
+            "sensor_id": "WS-001",
+            "suhu": round(random.uniform(2.0, 10.0), 2), # Suhu kulkas obat 2-8 derajat
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        client.publish(TOPIC, json.dumps(payload))
+        logging.info(f"Terkirim: {payload['suhu']}°C")
+        
+        if payload['suhu'] > 8.0:
+            logging.warning(f"PERINGATAN: Suhu melebihi batas aman! ({payload['suhu']}°C)")
+            
+        time.sleep(5)
+except Exception as e:
+    logging.error(f"Error: {e}")
+
+
+
+Latihan Mandiri
+
+//Latihan Mandiri 1
+
+a. buat database baru dan aktifkan virtual enviroment
+//untuk membuat database barunya
+mkdir latihan6
+
+//untuk mengaktifkan virtual enviroment
+Python -m venv venv
+
+b.	Buat koleksi maintenance, lalu buat file CSV bernama maintenance.csv dengan kolom mesin, tanggal, biaya, teknisi secara manual.
+mesin,tanggal,biaya,teknisi
+
+CNC-01,2026-05-01,1350000,Roru
+CNC-03,2026-05-02,900000,Acim
+CNC-03,2026-05-03,1250000,Bile
+CNC-02,2026-05-05,1600000,Roru
+CNC-01,2026-05-07,1000000,Bile
+CNC-03,2026-05-10,2300000,Acim
+CNC-01,2026-05-12,2150000,Roru
+CNC-03,2026-05-15,550000,Naya
+CNC-03,2026-06-01,1600000,Acim
+CNC-02,2026-06-03,1450000,Bile
+CNC-02,2026-06-05,950000,Naya
+CNC-02,2026-06-08,2150000,Acim
+CNC-01,2026-06-10,1950000,Naya
+CNC-01,2026-06-12,950000,Roru
+CNC-03,2026-06-15,2250000,Bile
+
+c. tulis skrip python bernama import_maintenance.py yang melakukan hal berikut:
+-	Membaca file CSV menggunakan pandas.read_csv().
+-	Mengonversi kolom tanggal menjadi tipe datetime.
+-	Menyisipkan seluruh data dari DataFrame ke dalam koleksi maintenance menggunakan satu perintah insert_many. Untuk itu, Anda harus mengubah DataFrame menjadi list of dictionary terlebih dahulu
+
+import pandas as pd
+from pymongo import MongoClient
+from dotenv import load_dotenv
+import os
+ 
+load_dotenv()
+ 
+# Koneksi ke MongoDB
+client = MongoClient(os.getenv('MONGO_URI'))
+db = client['latihan6']
+collection = db['maintenance']
+ 
+# membaca file CSV
+df = pd.read_csv('maintenance.csv')
+ 
+# konversi kolom tanggal ke datetime
+df['tanggal'] = pd.to_datetime(df['tanggal'])
+ 
+# ubah DataFrame 
+data = df.to_dict(orient='records')
+ 
+# insert semua data ke MongoDB
+result = collection.insert_many(data)
+print(f'Berhasil menyisipkan {len(result.inserted_ids)} dokumen ke koleksi maintenance')
+ 
+client.close()
+
+
+d.	Tulis skrip kedua bernama query_maintenance.py yang melakukan:
+-	Mencari semua dokumen dengan biaya lebih dari 1.000.000, menampilkannya dalam bentuk DataFrame.
+-	Melakukan update: pada dokumen yang memiliki mesin = "CNC-01" dan biaya = 1200000, ganti nilai teknisi menjadi "Dewi".
+-	Menghitung total biaya per bulan menggunakan aggregation pipeline. Karena tanggal bertipe date, Anda perlu mengekstrak bulan dan tahun, misalnya dengan operator $dateToString atau $substr. Tampilkan hasilnya dalam bentuk tabel di konsol atau DataFrame.
+
+import pandas as pd
+from pymongo import MongoClient
+
+# 1. Koneksi ke MongoDB
+client = MongoClient('mongodb://localhost:27017/')
+db = client['latihan6']
+collection = db['maintenance']
+
+print("--- LAPORAN MAINTENANCE ---")
+
+# A. Cari biaya > 1.000.000
+data_mahal = list(collection.find({"biaya": {"$gt": 1000000}}, {"_id": 0}))
+df_mahal = pd.DataFrame(data_mahal)
+print("\n1. Data dengan biaya > 1.000.000:")
+print(df_mahal)
+
+# B. Update teknisi CNC-01 (biaya 1.2jt) menjadi "Dewi"
+collection.update_one(
+    {"mesin": "CNC-01", "biaya": 1200000},
+    {"$set": {"teknisi": "Dewi"}}
+)
+print("\n2. Update teknisi 'Dewi' berhasil dilakukan.")
+
+# C. Agregasi Total Biaya per Bulan
+pipeline = [
+    {
+        "$group": {
+            "_id": { "$dateToString": { "format": "%Y-%m", "date": "$tanggal" } },
+            "total_biaya": { "$sum": "$biaya" },
+            "jumlah_tindakan": { "$sum": 1 }
+        }
+    },
+    { "$sort": { "_id": 1 } }
+]
+
+hasil_agregasi = list(collection.aggregate(pipeline))
+df_hasil = pd.DataFrame(hasil_agregasi)
+if not df_hasil.empty:
+    df_hasil.columns = ['Bulan', 'Total Biaya', 'Jumlah']
+print("\n3. Laporan Agregasi Per Bulan:")
+print(df_hasil)
+
+client.close()
+
+
+//Latihan Mandiri 2
+
+a. mqtt publisher
+import paho.mqtt.client as mqtt
+import json
+import time
+import random
+
+broker = "broker.hivemq.com"
+topic = "pabrik/produksi"
+
+client = mqtt.Client()
+client.connect(broker, 1883, 60)
+
+mesin_list = ["CNC-01", "CNC-02", "CNC-03"]
+batch_list = ["B001", "B002", "B003", "B004"]
+
+while True:
+    data = {
+        "batch": random.choice(batch_list),
+        "mesin": random.choice(mesin_list),
+        "jumlah": random.randint(100, 500),
+        "reject": random.randint(0, 50)
+    }
+
+    client.publish(topic, json.dumps(data))
+    print("Kirim:", data)
+
+    time.sleep(3)
+
+b. mqtt suscriber
+
+import paho.mqtt.client as mqtt
+import json
+from pymongo import MongoClient
+from datetime import datetime
+
+# koneksi mongoDB
+client_mongo = MongoClient('mongodb://localhost:27017/')
+db = client_mongo['latihan6'] # Database bebas
+collection = db['produksi_mqtt']
+
+# saat menerima pesan
+def on_message(client, userdata, message):
+    try:
+        payload = message.payload.decode("utf-8")
+        data = json.loads(payload)
+        
+        data['timestamp'] = datetime.now()
+
+        reject_rate = (data['reject'] / data['jumlah']) * 100
+        
+        # Peringatan jika > 5%
+        if reject_rate > 5:
+            data['peringatan'] = True
+            print(f"WARNING! Reject rate tinggi: {reject_rate:.2f}% pada Mesin {data['mesin']}")
+        else:
+            data['peringatan'] = False
+            print(f"Data diterima: {data['mesin']} (Rate: {reject_rate:.2f}%)")
+
+        # 5. Simpan ke MongoDB
+        collection.insert_one(data)
+        
+    except Exception as e:
+        print(f"Gagal memproses data: {e}")
+
+broker_address = "broker.hivemq.com" # Pakai broker publik supaya pasti konek
+topic = "pabrik/produksi"
+
+client = mqtt.Client()
+client.on_message = on_message
+
+print("Menghubungkan ke broker...")
+client.connect(broker_address, 1883)
+client.subscribe(topic)
+
+print(f"Subscriber aktif! Menunggu data di topik: {topic}...")
+client.loop_forever() # Biar program standby terus
